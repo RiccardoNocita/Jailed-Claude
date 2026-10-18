@@ -1,0 +1,371 @@
+#!/usr/bin/env bash
+
+#     ▄▄▄  ▄▄▄▄▄▄▄▄▄▄▄▄▄  ▄▄▄  ▄▄▄           ▄▄▄▄▄▄▄▄▄▄▄  ▄▄▄▄▄▄▄▄▄           ▄▄▄▄▄▄▄▄▄▄▄  ▄▄▄           ▄▄▄▄▄▄▄▄▄▄▄▄▄  ▄▄▄      ▄▄▄  ▄▄▄▄▄▄▄▄▄     ▄▄▄▄▄▄▄▄▄▄▄
+#     ███  ▄▄▄▄▄▄▄▄▄▄▄▄▄  ███  ███           ▄▄▄▄▄▄▄▄▄▄▄  ▄▄▄▄▄▄▄▄▄███        ▄▄▄▄▄▄▄▄▄▄▄  ███           ▄▄▄▄▄▄▄▄▄▄▄▄▄  ███      ███  ▄▄▄▄▄▄▄▄▄███  ▄▄▄▄▄▄▄▄▄▄▄
+#     ███            ███  ███  ███                                 ███                     ███                     ███  ███      ███           ███
+#     ███  ███       ███  ███  ███           ███▄▄▄▄▄▄    ███      ███        ███          ███           ███       ███  ███      ███  ███      ███  ███▄▄▄▄▄▄
+#     ███  ███▄▄▄▄▄▄▄███  ███  ███           ███▄▄▄▄▄▄    ███      ███        ███          ███           ███▄▄▄▄▄▄▄███  ███      ███  ███      ███  ███▄▄▄▄▄▄
+#     ███  ███▄▄▄▄▄▄▄███  ███  ███           ███          ███      ███        ███          ███           ███▄▄▄▄▄▄▄███  ███      ███  ███      ███  ███
+# ▄▄▄▄███  ███       ███  ███  ███ ▄▄▄▄▄▄▄▄  ███▄▄▄▄▄▄▄▄  ███▄▄▄▄▄▄███        ███▄▄▄▄▄▄▄▄  ███ ▄▄▄▄▄▄▄▄  ███       ███  ███ ▄▄▄▄▄███  ███▄▄▄▄▄▄███  ███▄▄▄▄▄▄▄▄
+# ▄▄▄▄███  ███       ███  ███  ███ ▄▄▄▄▄▄▄▄  ███▄▄▄▄▄▄▄▄  ███▄▄▄▄▄▄███        ███▄▄▄▄▄▄▄▄  ███ ▄▄▄▄▄▄▄▄  ███       ███  ███ ▄▄▄▄▄█▄▄  ███▄▄▄▄▄▄███  ███▄▄▄▄▄▄▄▄
+#
+# Author: <riccardo.noc@gmail.com>
+#
+# v: 1.0.1
+#
+# Github repo: https://github.com/RiccardoNocita/Jailed-Claude
+#
+
+VERSION="1.0.1"
+
+set -euo pipefail
+
+if [[ $# -eq 1 && "$1" == "-v" ]]; then
+    echo "Jailed Claude - $VERSION"
+    exit 0
+fi
+
+# Ctrl+C during any interactive selection aborts the whole script.
+trap 'printf "\n>> Interrupted.\n" >&2; exit 130' INT
+
+# Resolve this script's real path, following symlinks (so a PATH symlink works)
+_SRC="${BASH_SOURCE[0]}"
+while [[ -h "$_SRC" ]]; do
+  _DIR="$(cd "$(dirname "$_SRC")" && pwd)"
+  _SRC="$(readlink "$_SRC")"
+  [[ "$_SRC" != /* ]] && _SRC="$_DIR/$_SRC"
+done
+SCRIPT_DIR="$(cd "$(dirname "$_SRC")" && pwd)"
+IMAGE="${JAILED_CLAUDE_IMAGE:-jailed-claude:latest}"
+DOCKERFILE="$SCRIPT_DIR/Dockerfile.jailed-claude"
+
+# Fail early with a clear message if Docker is missing
+if ! command -v docker >/dev/null 2>&1; then
+  echo "!! 'docker' not found in PATH. Install Docker Engine (>= 20.10) first." >&2
+  exit 1
+fi
+
+# ---------- Build the image if missing ----------
+if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+  echo ">> Image $IMAGE not found: building it now..." >&2
+  if [[ ! -f "$DOCKERFILE" ]]; then
+    echo "!! Dockerfile not found at: $DOCKERFILE" >&2; exit 1
+  fi
+  docker build -t "$IMAGE" -f "$DOCKERFILE" "$SCRIPT_DIR"
+fi
+
+
+claude_galera() {
+  local msg="${1:-It was just an rm * -rf ...}"
+  local O=$'\e[38;5;173m'
+  local G=$'\e[38;5;245m'
+  local B=$'\e[1m'
+  local R=$'\e[0m'
+  [[ -t 1 ]] || { O=""; G=""; B=""; R=""; }
+
+
+  local -a px=(
+    "................"
+    "................"
+    "................"
+    "...##########..."
+    "...##.####.##..."
+    ".##############."
+    ".##############."
+    "...##########..."
+    "................"
+    "....#.#..#.#...."
+    "....#.#..#.#...."
+    "................"
+  )
+  local -a hbar=(1 8)
+  local -a vbar=(5 12 19 26)
+  local W=$(( ${#px[0]} * 2 ))
+  local r c p isv ish
+
+  local dash; dash=$(printf '%*s' $(( ${#msg} + 4 )) '' | tr ' ' '-')
+  printf '\n  .%s.\n  |  %s  |\n  '"'"'%s'"'"'\n            \\\n' "$dash" "$msg" "$dash"
+
+  for (( r = 0; r < ${#px[@]}; r++ )); do
+    ish=0; for p in "${hbar[@]}"; do (( r == p )) && ish=1; done
+    printf ' '
+    for (( c = 0; c < W; c++ )); do
+      isv=0; for p in "${vbar[@]}"; do (( c == p )) && isv=1; done
+      if   (( ish && isv )); then                printf '%s╋' "$G"
+      elif (( ish && c >= 2 && c < W - 2 )); then printf '%s━' "$G"
+      elif (( isv )); then                       printf '%s┃' "$G"
+      elif [[ "${px[r]:c/2:1}" == "#" ]]; then   printf '%s█' "$O"
+      else                                       printf ' '
+      fi
+    done
+    printf '%s\n' "$R"
+  done
+  printf '\n      %sJailed Claude - By R.N.%s\n\n' "$B" "$R"
+}
+
+
+claude_galera
+
+# ================= CONFIG =================
+
+CONF_DIR="$SCRIPT_DIR/conf"          # folder holding the *.conf files
+
+HOST_UID="$(id -u)"
+HOST_GID="$(id -g)"
+HOME_PATH="$HOME"
+CUR_PATH="$(pwd)"
+
+# Only these home entries (dir + file) are bind-mounted
+WHITELIST=(".claude" ".claude.json")
+
+# Hosts to blackhole in --isolated mode. Fully replaceable via JAILED_CLAUDE_BLOCK_HOSTS (space separated)
+BLOCK_HOSTS="${JAILED_CLAUDE_BLOCK_HOSTS:-api.anthropic.com anthropic.com www.anthropic.com console.anthropic.com statsig.anthropic.com claude.ai www.claude.ai}"
+
+# host.docker.internal -> host gateway mapping (default: enabled).
+# Disable with JAILED_ALLOW_INTERNAL=0|false|no|off to cut container->host reachability.
+ALLOW_INTERNAL="${JAILED_ALLOW_INTERNAL:-1}"
+case "${ALLOW_INTERNAL,,}" in
+  0|false|no|off) ALLOW_INTERNAL=0 ;;
+  1|true|yes|on)  ALLOW_INTERNAL=1 ;;
+  *) echo "!! Unrecognized JAILED_ALLOW_INTERNAL='${JAILED_ALLOW_INTERNAL}': defaulting to enabled." >&2; ALLOW_INTERNAL=1 ;;
+esac
+
+# ---------- Parse arguments: extract --isolated, the rest goes to claude ----------
+ISOLATED=0
+claude_args=()
+for a in "$@"; do
+  if [[ "$a" == "--isolated" ]]; then ISOLATED=1; else claude_args+=("$a"); fi
+done
+
+# ---------- Isolation choice (if not already set by --isolated) ----------
+if [[ "$ISOLATED" != "1" ]]; then
+  if [[ -t 0 ]]; then
+    read -rp ">> Isolate the container (blackhole the upstream host list)? (Enter = yes, 'n' = no): " ans || true
+    case "${ans,,}" in
+      n|no|f|false|0) ISOLATED=0 ;;
+      *) ISOLATED=1 ;;          # default and any other answer -> isolated
+    esac
+  else
+    ISOLATED=1                  # non-interactive: default = isolated
+  fi
+fi
+echo ">> Network isolation: $([[ "$ISOLATED" == "1" ]] && echo enabled || echo disabled)" >&2
+
+# ---------- Configuration file selection (conf/*.conf) ----------
+CHOSEN_CONF=""
+conf_list=()
+shopt -s nullglob
+for f in "$CONF_DIR"/*.conf; do conf_list+=("$(basename "$f")"); done
+shopt -u nullglob
+
+if [[ -n "${JAILED_CONF:-}" ]]; then
+  # explicit override via env (useful for automation / non-interactive)
+  if [[ -f "$CONF_DIR/$JAILED_CONF" ]]; then
+    CHOSEN_CONF="$CONF_DIR/$JAILED_CONF"
+    echo ">> Config (from JAILED_CONF): $JAILED_CONF" >&2
+  else
+    echo "!! JAILED_CONF=$JAILED_CONF not found in $CONF_DIR." >&2
+  fi
+elif [[ ${#conf_list[@]} -gt 0 ]] && [[ -t 0 ]]; then
+  if command -v fzf >/dev/null 2>&1; then
+    chosen="$(printf '%s\n' "${conf_list[@]}" \
+      | fzf --prompt "Conf> " --header "Select a configuration file")" || true
+    [[ -n "$chosen" ]] && CHOSEN_CONF="$CONF_DIR/$chosen"
+  else
+    echo ">> fzf not found: install it for a nicer picker (brew/apt-get install fzf)." >&2
+    echo ">> Select a configuration file:" >&2
+    for i in "${!conf_list[@]}"; do
+      printf "   %d) %s\n" "$((i+1))" "${conf_list[$i]}" >&2
+    done
+    while true; do
+      read -rp ">> Choice [1-${#conf_list[@]}]: " choice || { echo ">> No input." >&2; exit 130; }
+      if [[ "$choice" =~ ^[0-9]+$ ]] && (( ${#choice} <= 9 )); then
+        choice=$((10#$choice))   # force base 10 (avoids octal errors on e.g. "08")
+        if (( choice >= 1 && choice <= ${#conf_list[@]} )); then
+          CHOSEN_CONF="$CONF_DIR/${conf_list[$((choice-1))]}"
+          break
+        fi
+      fi
+      echo ">> Invalid choice, try again." >&2
+    done
+  fi
+elif [[ -t 0 ]]; then
+  : # no .conf files -> handled by the warning block below
+else
+  # non-interactive and more than one conf available
+  if [[ ${#conf_list[@]} -eq 1 ]]; then
+    CHOSEN_CONF="$CONF_DIR/${conf_list[0]}"
+    echo ">> Non-interactive: using the only available config: ${conf_list[0]}" >&2
+  fi
+fi
+
+# ---------- Warn before proceeding if no config was selected/found ----------
+if [[ -z "$CHOSEN_CONF" ]]; then
+  echo "!! WARNING: no configuration file selected (none found in $CONF_DIR)." >&2
+  echo "!! Claude will run with NO extra environment variables and only the 'default' model." >&2
+  if [[ -t 0 ]]; then
+    read -rp ">> Continue without a config file? [Y/n] (Ctrl+C to abort): " c || true
+    case "${c,,}" in
+      n|no) echo ">> Aborted." >&2; exit 1 ;;
+    esac
+  fi
+fi
+
+# ---------- Load properties from the chosen configuration file ----------
+env_args=()
+models_csv=""
+if [[ -n "$CHOSEN_CONF" ]]; then
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    # trim leading/trailing whitespace
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [[ -z "$line" || "$line" == \#* ]] && continue     # blank / comment
+    line="${line#export }"                              # optional "export "
+    [[ "$line" != *=* ]] && { echo ">> $(basename "$CHOSEN_CONF"): ignored line: $line" >&2; continue; }
+    key="${line%%=*}"
+    val="${line#*=}"
+    key="${key%"${key##*[![:space:]]}"}"                # trim key
+    if [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+      echo ">> $(basename "$CHOSEN_CONF"): invalid key ignored: $key" >&2; continue
+    fi
+    if [[ "$key" == "HOME" ]]; then
+      echo ">> $(basename "$CHOSEN_CONF"): HOME is managed by the script, ignored." >&2; continue
+    fi
+    # strip surrounding quotes from value
+    if [[ ${#val} -ge 2 ]]; then
+      if [[ "${val:0:1}" == '"' && "${val: -1}" == '"' ]]; then val="${val:1:${#val}-2}"; fi
+      if [[ "${val:0:1}" == "'" && "${val: -1}" == "'" ]]; then val="${val:1:${#val}-2}"; fi
+    fi
+    # special key: only for the model list, NOT passed to the container
+    if [[ "$key" == "JAILED_MODELS" ]]; then
+      models_csv="$val"
+      continue
+    fi
+    env_args+=(-e "$key=$val")
+  done < "$CHOSEN_CONF"
+  echo ">> Env from $(basename "$CHOSEN_CONF"): ${#env_args[@]} variable(s)." >&2
+else
+  echo ">> No config loaded (no extra env vars, only the 'default' model)." >&2
+fi
+
+# ---------- Build the model list: default + JAILED_MODELS ----------
+MODELS=("default")
+if [[ -n "$models_csv" ]]; then
+  IFS=',' read -ra _m <<< "$models_csv"
+  for m in "${_m[@]}"; do
+    m="${m#"${m%%[![:space:]]*}"}"      # trim spaces
+    m="${m%"${m##*[![:space:]]}"}"
+    [[ -z "$m" ]] && continue
+    MODELS+=("$m")
+  done
+else
+  echo ">> No entries in JAILED_MODELS: only the 'default' model is available." >&2
+fi
+
+# ---------- Model selection (fzf if available, otherwise numeric menu) ----------
+SELECTED_MODEL="default"
+if [[ -t 0 ]]; then
+  if command -v fzf >/dev/null 2>&1; then
+    choice="$(printf '%s\n' "${MODELS[@]}" \
+      | fzf --prompt "Model> " --header "Select the model to use")" || true
+    [[ -z "$choice" ]] && choice="default"     # Esc / empty -> default
+    SELECTED_MODEL="$choice"
+  else
+    echo ">> fzf not found: install it for a nicer picker (brew/apt-get install fzf)." >&2
+    echo ">> Select the model:" >&2
+    for i in "${!MODELS[@]}"; do
+      printf "   %d) %s\n" "$((i+1))" "${MODELS[$i]}" >&2
+    done
+    while true; do
+      read -rp ">> Choice [1-${#MODELS[@]}] (Enter = 1): " choice || { echo ">> No input." >&2; exit 130; }
+      [[ -z "$choice" ]] && choice=1
+      if [[ "$choice" =~ ^[0-9]+$ ]] && (( ${#choice} <= 9 )); then
+        choice=$((10#$choice))   # force base 10 (avoids octal errors on e.g. "08")
+        if (( choice >= 1 && choice <= ${#MODELS[@]} )); then
+          SELECTED_MODEL="${MODELS[$((choice-1))]}"
+          break
+        fi
+      fi
+      echo ">> Invalid choice, try again." >&2
+    done
+  fi
+else
+  echo ">> Non-interactive: using 'default' (no model forced)." >&2
+fi
+
+# default -> pass nothing; otherwise force the model
+model_args=()
+if [[ "$SELECTED_MODEL" != "default" ]]; then
+  model_args+=(--model "$SELECTED_MODEL")
+fi
+echo ">> Model: $SELECTED_MODEL" >&2
+
+# ---------- Bind mounts ----------
+volumes=()
+volumes+=(-v "$CUR_PATH:$CUR_PATH")                 # cwd, same path
+if [[ "$CUR_PATH" != "$HOME_PATH" ]]; then
+  for rel in "${WHITELIST[@]}"; do                  # only .claude/ and .claude.json
+    src="$HOME_PATH/$rel"
+    [[ -e "$src" ]] || continue
+    volumes+=(-v "$src:$src")
+  done
+fi
+
+# ---------- --isolated mode: blackhole the configured host list ----------
+extra_args=()
+hosts_tmp=""
+if [[ "$ISOLATED" == "1" ]]; then
+  # Validate the blocklist: skip malformed entries, but abort if nothing valid
+  # remains (an empty list would silently disable isolation).
+  valid_hosts=()
+  for d in $BLOCK_HOSTS; do
+    if [[ "$d" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] && [[ "$d" != *..* ]]; then
+      valid_hosts+=("$d")
+    else
+      echo "!! Ignoring malformed host in blocklist: '$d'" >&2
+    fi
+  done
+  if (( ${#valid_hosts[@]} == 0 )); then
+    echo "!! No valid hosts in the blocklist (JAILED_CLAUDE_BLOCK_HOSTS): refusing to run isolated." >&2
+    exit 1
+  fi
+
+  hosts_tmp="$(mktemp -d)"
+  trap 'rm -rf "$hosts_tmp"' EXIT
+  {
+    echo "127.0.0.1 localhost"
+    echo "::1       localhost ip6-localhost ip6-loopback"
+    for d in "${valid_hosts[@]}"; do
+      echo "127.0.0.1 $d"
+      echo "::1       $d"
+    done
+  } > "$hosts_tmp/hosts"
+  extra_args+=(-v "$hosts_tmp/hosts:/etc/hosts:ro")
+  echo ">> --isolated active: ${#valid_hosts[@]} host(s) -> localhost (blocked): ${valid_hosts[*]}" >&2
+fi
+
+# ---------- host.docker.internal mapping (JAILED_ALLOW_INTERNAL, default: enabled) ----------
+if [[ "$ALLOW_INTERNAL" == "1" ]]; then
+  extra_args+=(--add-host=host.docker.internal:host-gateway)
+else
+  echo ">> host.docker.internal: NOT mapped (JAILED_ALLOW_INTERNAL=${JAILED_ALLOW_INTERNAL})." >&2
+  for kv in ${env_args[@]+"${env_args[@]}"}; do
+    if [[ "$kv" == *host.docker.internal* ]]; then
+      echo "!! WARNING: '$kv' references host.docker.internal, which is unreachable with the mapping disabled." >&2
+    fi
+  done
+fi
+
+# ---------- Run ... into the jail! ----------
+docker run --rm -it \
+  --init \
+  --user "$HOST_UID:$HOST_GID" \
+  --cap-drop=ALL \
+  --security-opt no-new-privileges \
+  -e HOME="$HOME_PATH" \
+  ${env_args[@]+"${env_args[@]}"} \
+  "${volumes[@]}" \
+  ${extra_args[@]+"${extra_args[@]}"} \
+  -w "$CUR_PATH" \
+  "$IMAGE" \
+  claude ${model_args[@]+"${model_args[@]}"} ${claude_args[@]+"${claude_args[@]}"}

@@ -1,0 +1,193 @@
+# jailed-claude
+
+> Run [Claude Code](https://code.claude.com/) inside an isolated Docker sandbox — switch **LLM-provider profiles** with a single keystroke, keep your history intact, and optionally **cut the network off**.
+
+![Docker](https://img.shields.io/badge/requires-Docker-2496ED?logo=docker&logoColor=white)
+![Shell](https://img.shields.io/badge/Shell-bash-4EAA25?logo=gnubash&logoColor=white)
+![License](https://img.shields.io/badge/License-MIT-0e4429)
+
+![](docs/jailed-claude.png)
+
+## 🚀 Quick Start
+
+Just run the following commands:
+
+```bash
+# 1. Download only the installer and execute it
+curl -fsSL https://raw.githubusercontent.com/RiccardoNocita/Jailed-Claude/master/install.sh | bash
+
+# 2. Run (Wait only first time for image build)
+jailed-claude
+```
+
+## What it is (and isn't)
+
+`jailed-claude` is a thin **wrapper** around the official Claude Code CLI. It does **not** modify, patch, rebrand, or change how Claude Code thinks or behaves — the agent stays 100% stock. What it adds is a layer of *control and isolation* around it:
+
+- **Sandboxing** — every session runs in a throwaway Docker container that can only see the folder you're working in (plus your Claude history).
+- **Provider profiles** — you decide *which LLM provider / endpoint / model* Claude talks to, using small `conf/*.conf` files. Swap providers without touching anything else.
+- **Optional network lockdown** — with `--isolated`, all traffic to the upstream provider (Anthropic) is blocked, so your code never reaches the cloud and nothing can phone home or auto-update.
+
+> In short: same Claude Code, different cage. You pick who it talks to — and whether it's allowed to talk at all.
+
+## Features
+
+- 🐳 Isolated `docker run` on demand (no long-lived containers). Can't access files outside the trusted dir by mistake (Finally...)
+- 🔌 Pluggable LLM-provider profiles via `conf/*.conf` (endpoint + auth + models)
+- 🧠 History & config preserved: only `~/.claude/` and `~/.claude.json` are bind-mounted
+- 🎯 Interactive model picker (fuzzy with [fzf](https://github.com/junegunn/fzf), numeric fallback) — `default` lets Claude decide
+- 🔒 Isolated mode that blackholes the upstream domains (privacy / no telemetry / no auto-updates)
+- 🛡️ Hardened container: drops all capabilities, `no-new-privileges`, runs as your UID/GID
+- ⌨️ Ctrl+C aborts any prompt; non-interactive friendly via env overrides
+- 📦 One-line remote install
+
+
+## How the sandbox works
+
+| Aspect | Behavior |
+|---|---|
+| Working dir | Your current folder is bind-mounted at the **same path** inside the container |
+| Home | Only `~/.claude/` and `~/.claude.json` are mounted — nothing else in `$HOME` is exposed |
+| User | Runs as your host UID:GID (no root, no stray files) |
+| Capabilities | `--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--init` |
+| Host reachability | `host.docker.internal` mapped to the host by default (for local gateways) — disable with `JAILED_ALLOW_INTERNAL=0` |
+| Image | Built on first run from `Dockerfile.jailed-claude` (`node:20-slim` + Claude Code + git/ripgrep/bash) |
+
+## Installation
+
+```
+  .-------------------------------.
+  |  It was just an rm * -rf ...  |
+  '-------------------------------'
+            \
+      ┃      ┃      ┃      ┃     
+   ━━━╋━━━━━━╋━━━━━━╋━━━━━━╋━━━  
+      ┃      ┃      ┃      ┃     
+      ┃██████┃██████┃██████┃     
+      ┃████  ┃██████┃  ████┃     
+   ███┃██████┃██████┃██████┃███  
+   ███┃██████┃██████┃██████┃███  
+      ┃██████┃██████┃██████┃     
+   ━━━╋━━━━━━╋━━━━━━╋━━━━━━╋━━━  
+      ┃  ██  ┃█    █┃  ██  ┃     
+      ┃  ██  ┃█    █┃  ██  ┃     
+      ┃      ┃      ┃      ┃   
+```
+
+### Requirements
+- Docker Engine ≥ 20.10 (or Docker Desktop)
+- `bash`, and `curl` or `wget`
+- *(optional)* [`fzf`](https://github.com/junegunn/fzf) for the fuzzy picker
+
+### One-liner
+```bash
+curl -fsSL https://raw.githubusercontent.com/RiccardoNocita/Jailed-Claude/master/install.sh | bash
+```
+The installer downloads the needed files from this repo into `~/.local/share/jailed-claude` and symlinks the command onto your `PATH`.
+
+## Usage
+
+### Basic
+```bash
+jailed_claude                          # pick a profile + model, then you're in Claude Code
+jailed_claude -p "summarize this repo" # any Claude Code flag is passed through
+```
+
+On launch it asks, in order:
+1. **Isolate from the upstream provider?** (default: *yes*)
+2. **Which config profile?** (`conf/*.conf`)
+3. **Which model?** (`default` = let Claude decide)
+
+### Provider profiles
+
+Default location: 
+>  $HOME/.local/share/jailed-claude/conf
+
+Each `conf/*.conf` is a named *identity* for an LLM provider — the endpoint, credentials and models to use:
+
+Example: **`conf/local.conf`**
+```bash
+JAILED_MODELS=unsloth/Qwen3.8-27B-GGUF,unsloth/Qwen3.6-35B-A3B-GGUF
+ANTHROPIC_BASE_URL=http://host.docker.internal:11434
+# ANTHROPIC_AUTH_TOKEN=sk-...
+# API_FORCE_IDLE_TIMEOUT=0
+# API_TIMEOUT_MS="3600000"
+```
+
+`conf/default.conf` ships with **no** environment variables, so Claude Code runs exactly as it would natively. This is how you "manage provider identities": one file per provider, chosen at launch.
+
+### Isolated mode (network lockdown)
+By default the wrapper asks whether to isolate; press Enter (yes) and it rewrites `/etc/hosts` inside the container to point every host in the blocklist at `127.0.0.1`. Result: **no** traffic to those upstreams — only your local endpoint works. Useful for:
+
+- **Privacy** — source code never leaves the machine
+- **Integrity** — nothing remote can alter behaviour or push unwanted changes
+- **No auto-updates / telemetry** — the upstream is simply unreachable
+
+Force it from the CLI with `--isolated` (skips the prompt).
+
+#### Custom blocklist (`JAILED_CLAUDE_BLOCK_HOSTS`)
+The list of blackholed hosts defaults to the Anthropic domains and can be fully replaced via the `JAILED_CLAUDE_BLOCK_HOSTS` environment variable (space-separated hostnames):
+
+```bash
+# Block Anthropic plus any other host you want unreachable
+export JAILED_CLAUDE_BLOCK_HOSTS="api.anthropic.com statsig.anthropic.com sentry.io"
+jailed_claude --isolated
+```
+
+Malformed entries are skipped with a warning; if no valid host remains, the wrapper refuses to start in isolated mode (an empty list would silently disable isolation). The active list is printed on launch.
+
+> **Limitations — read this.** The lockdown works at the *name-resolution* layer only:
+> - hosts **not** in the list resolve and connect normally — this is not an air gap;
+> - direct IP connections, DNS-over-HTTPS or hardcoded endpoints bypass it;
+> - `host.docker.internal` is mapped by default for local gateways — you can cut it with `JAILED_ALLOW_INTERNAL=0`.
+>
+> For a hard guarantee, run the container on a dedicated Docker network with egress filtering (or `--network=none` plus an allow-listed proxy).
+
+## Configuration reference
+
+### Keys inside a `conf/*.conf` file
+| Key | Meaning |
+|---|---|
+| `JAILED_MODELS` | Comma-separated model IDs offered in the picker (`default` is always added) |
+| any other `KEY=VALUE` | Passed to the container as an environment variable (e.g. `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`) |
+
+> Values are read **verbatim to the end of the line**: there is no inline-comment support, so put `#` comments on their own line. Surrounding single/double quotes are stripped and an optional `export ` prefix is tolerated.
+
+### Environment overrides (for automation / non-interactive use)
+| Variable | Purpose |
+|---|---|
+| `JAILED_CLAUDE_IMAGE` | Docker image tag (default `jailed-claude:latest`) |
+| `JAILED_CONF` | Skip the profile picker and use this conf file directly |
+| `JAILED_CLAUDE_BLOCK_HOSTS` | Space-separated hostnames to blackhole in isolated mode (default: Anthropic domains — see *Custom blocklist*) |
+| `JAILED_ALLOW_INTERNAL` | Map `host.docker.internal` to the host gateway. Default: enabled; set `0`/`false`/`no`/`off` to drop the mapping (gateway profiles that use that hostname will then fail) |
+
+## Project layout
+```
+jailed-claude/
+├── jailed-claude              # wrapper / entrypoint
+├── Dockerfile.jailed-claude   # sandbox image definition
+├── install.sh                 # remote installer (curl | bash)
+├── conf/
+│   ├── default.conf           # stock Claude Code (no env vars)
+│   └── local.conf             # example local-gateway profile
+└── docs/                      # screenshots referenced in the README
+```
+
+## Security notes
+- The container only ever sees your CWD + `~/.claude{,.json}`; the rest of your filesystem is invisible to it.
+- All Linux capabilities are dropped and privilege escalation is disabled.
+- In isolated mode, egress to the listed upstreams is cut at the name-resolution layer (see *Limitations* in the Isolated mode section).
+- For a stricter sandbox you can add `--read-only --tmpfs /tmp` to the run (see source).
+
+## Uninstall
+```bash
+rm -f ~/.local/bin/jailed_claude            # or wherever the symlink lives
+rm -rf ~/.local/share/jailed-claude
+docker rmi jailed-claude:latest             # optional
+```
+
+## Disclaimer
+Independent project. Not affiliated with, endorsed by, or maintained by Anthropic. "Claude Code" and related marks are the property of their respective owners.
+
+## License
+Released under the [MIT License](LICENSE) — use it, modify it, and ship it however you like.

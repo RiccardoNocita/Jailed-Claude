@@ -1,0 +1,15 @@
+FROM node:20-slim
+
+# Tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl git bash less ripgrep \
+    && rm -rf /var/lib/apt/lists/*
+
+# Claude Code CLI (native, command: claude)
+RUN npm install -g @anthropic-ai/claude-code
+
+# Cache npm in /tmp
+ENV NPM_CONFIG_CACHE=/tmp/npm-cache \
+    HOME=/root
+
+CMD ["claude"]
