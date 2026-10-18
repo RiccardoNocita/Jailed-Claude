@@ -27,7 +27,7 @@ set -euo pipefail
 
 # ================= CONFIG (edit these) =================
 REPO="RiccardoNocita/Jailed-Claude"
-BRANCH="${JAILED_CLAUDE_BRANCH:-main}"                 # branch or tag to install from
+BRANCH="${JAILED_CLAUDE_BRANCH:-master}"                 # branch or tag to install from
 INSTALL_DIR="${JAILED_CLAUDE_HOME:-$HOME/.local/share/jailed-claude}"
 CMD_NAME="jailed-claude"                               # command name to expose on PATH
 
