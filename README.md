@@ -20,6 +20,8 @@ curl -fsSL https://raw.githubusercontent.com/RiccardoNocita/Jailed-Claude/master
 jailed-claude
 ```
 
+Take a look at the [scenario examples](./examples/).
+
 ## What it is (and isn't)
 
 `jailed-claude` is a thin **wrapper** around the official Claude Code CLI. It does **not** modify, patch, rebrand, or change how Claude Code thinks or behaves — the agent stays 100% stock. What it adds is a layer of *control and isolation* around it:
@@ -89,8 +91,8 @@ The installer downloads the needed files from this repo into `~/.local/share/jai
 
 ### Basic
 ```bash
-jailed_claude                          # pick a profile + model, then you're in Claude Code
-jailed_claude -p "summarize this repo" # any Claude Code flag is passed through
+jailed-claude                          # pick a profile + model, then you're in Claude Code
+jailed-claude -p "summarize this repo" # any Claude Code flag is passed through
 ```
 
 On launch it asks, in order:
