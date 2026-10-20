@@ -133,7 +133,7 @@ The list of blackholed hosts defaults to the Anthropic domains and can be fully 
 ```bash
 # Block Anthropic plus any other host you want unreachable
 export JAILED_CLAUDE_BLOCK_HOSTS="api.anthropic.com statsig.anthropic.com sentry.io"
-jailed_claude --isolated
+jailed-claude --isolated
 ```
 
 Malformed entries are skipped with a warning; if no valid host remains, the wrapper refuses to start in isolated mode (an empty list would silently disable isolation). The active list is printed on launch.
@@ -183,10 +183,14 @@ jailed-claude/
 
 ## Uninstall
 ```bash
-rm -f ~/.local/bin/jailed_claude            # or wherever the symlink lives
+rm -f ~/.local/bin/jailed-claude            # or wherever the symlink lives
 rm -rf ~/.local/share/jailed-claude
 docker rmi jailed-claude:latest             # optional
 ```
+
+## Future Improvements
+
+- **Full Network Isolation:** The isolation mechanisms will be enhanced to achieve complete network isolation
 
 ## Disclaimer
 Independent project. Not affiliated with, endorsed by, or maintained by Anthropic. "Claude Code" and related marks are the property of their respective owners.
