@@ -115,8 +115,11 @@ HOST_GID="$(id -g)"
 HOME_PATH="$HOME"
 CUR_PATH="$(pwd)"
 
-# Only these home entries (dir + file) are bind-mounted
+# Only these home entries (dir + file) are bind-mounted read-write
 WHITELIST=(".claude" ".claude.json")
+
+# These home entries are bind-mounted READ-ONLY
+WHITELIST_RO=(".claude/settings.json" ".claude/commands" ".claude/agents" ".claude/skills" ".claude/hooks")
 
 # Hosts to blackhole in --isolated mode. Fully replaceable via JAILED_CLAUDE_BLOCK_HOSTS (space separated)
 BLOCK_HOSTS="${JAILED_CLAUDE_BLOCK_HOSTS:-api.anthropic.com anthropic.com www.anthropic.com console.anthropic.com statsig.anthropic.com claude.ai www.claude.ai}"
@@ -304,10 +307,15 @@ echo ">> Model: $SELECTED_MODEL" >&2
 volumes=()
 volumes+=(-v "$CUR_PATH:$CUR_PATH")                 # cwd, same path
 if [[ "$CUR_PATH" != "$HOME_PATH" ]]; then
-  for rel in "${WHITELIST[@]}"; do                  # only .claude/ and .claude.json
+  for rel in "${WHITELIST[@]}"; do                  # only .claude/ and .claude.json (read-write)
     src="$HOME_PATH/$rel"
     [[ -e "$src" ]] || continue
     volumes+=(-v "$src:$src")
+  done
+  for rel in "${WHITELIST_RO[@]}"; do               # nested read-only overrides
+    src="$HOME_PATH/$rel"
+    [[ -e "$src" ]] || continue
+    volumes+=(-v "$src:$src:ro")
   done
 fi
 
