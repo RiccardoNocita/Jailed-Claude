@@ -1,12 +1,16 @@
 FROM node:24-slim
 
-# Tools
+# Tools (nftables backs the --strict egress-pinning sidecar)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl git bash less ripgrep \
+      ca-certificates curl git bash less ripgrep nftables \
     && rm -rf /var/lib/apt/lists/*
 
 # Claude Code CLI (native, command: claude)
 RUN npm install -g @anthropic-ai/claude-code
+
+# --strict sidecar init (pins the netns egress to a single host:port via nftables)
+COPY strict-init.sh /usr/local/lib/jailed-claude/strict-init.sh
+RUN chmod 0755 /usr/local/lib/jailed-claude/strict-init.sh
 
 # Cache npm in /tmp
 ENV NPM_CONFIG_CACHE=/tmp/npm-cache \

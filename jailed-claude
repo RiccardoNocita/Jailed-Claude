@@ -11,12 +11,12 @@
 #
 # Author: <riccardo.noc@gmail.com>
 #
-# v: 1.0.2
+# v: 1.1.0
 #
 # Github repo: https://github.com/RiccardoNocita/Jailed-Claude
 #
 
-VERSION="1.0.2"
+VERSION="1.1.0"
 
 set -euo pipefail
 
@@ -27,6 +27,34 @@ fi
 
 # Ctrl+C during any interactive selection aborts the whole script.
 trap 'printf "\n>> Interrupted.\n" >&2; exit 130' INT
+
+# Single teardown point for every exit path (normal, error, INT, TERM).
+# Every command is guarded with || true: under set -e one failure must not
+# abort the rest of the teardown mid-trap.
+hosts_tmp=""
+resolv_file=""
+sidecar_name=""
+strict_net=""
+cleanup() {
+  trap - EXIT INT TERM
+  [[ -n "$hosts_tmp" ]] && rm -rf "$hosts_tmp" || true
+  [[ -n "$resolv_file" ]] && rm -f "$resolv_file" || true
+  if [[ -n "$sidecar_name" ]]; then docker rm -f "$sidecar_name" >/dev/null 2>&1 || true; fi
+  if [[ -n "$strict_net" ]]; then docker network rm "$strict_net" >/dev/null 2>&1 || true; fi
+}
+trap cleanup EXIT
+trap 'printf "\n>> Terminated.\n" >&2; exit 143' TERM
+
+die() { echo "!! $*" >&2; exit 1; }
+
+# Strict dotted-quad check (regex + octet range), used by --strict resolution.
+valid_ipv4() {
+  [[ "$1" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
+  local o
+  for o in "${BASH_REMATCH[@]:1}"; do
+    (( 10#$o <= 255 )) || return 1
+  done
+}
 
 # Resolve this script's real path, following symlinks (so a PATH symlink works)
 _SRC="${BASH_SOURCE[0]}"
@@ -133,15 +161,23 @@ case "${ALLOW_INTERNAL,,}" in
   *) echo "!! Unrecognized JAILED_ALLOW_INTERNAL='${JAILED_ALLOW_INTERNAL}': defaulting to enabled." >&2; ALLOW_INTERNAL=1 ;;
 esac
 
-# ---------- Parse arguments: extract --isolated, the rest goes to claude ----------
+# ---------- Parse arguments: extract --strict/--isolated, the rest goes to claude ----------
+STRICT=0
 ISOLATED=0
 claude_args=()
 for a in "$@"; do
-  if [[ "$a" == "--isolated" ]]; then ISOLATED=1; else claude_args+=("$a"); fi
+  case "$a" in
+    --strict)   STRICT=1 ;;
+    --isolated) ISOLATED=1 ;;
+    *)          claude_args+=("$a") ;;
+  esac
 done
+if [[ "$STRICT" == "1" && "$ISOLATED" == "1" ]]; then
+  echo ">> Note: --strict supersedes --isolated (the blocklist is not applied)." >&2
+fi
 
-# ---------- Isolation choice (if not already set by --isolated) ----------
-if [[ "$ISOLATED" != "1" ]]; then
+# ---------- Isolation choice (only if neither flag was given) ----------
+if [[ "$STRICT" != "1" && "$ISOLATED" != "1" ]]; then
   if [[ -t 0 ]]; then
     read -rp ">> Isolate the container (blackhole the upstream host list)? (Enter = yes, 'n' = no): " ans || true
     case "${ans,,}" in
@@ -152,7 +188,10 @@ if [[ "$ISOLATED" != "1" ]]; then
     ISOLATED=1                  # non-interactive: default = isolated
   fi
 fi
-echo ">> Network isolation: $([[ "$ISOLATED" == "1" ]] && echo enabled || echo disabled)" >&2
+if   [[ "$STRICT" == "1" ]]; then   echo ">> Network isolation: strict (all egress pinned to ANTHROPIC_BASE_URL)" >&2
+elif [[ "$ISOLATED" == "1" ]]; then echo ">> Network isolation: enabled (blocklist blackholed)" >&2
+else                                echo ">> Network isolation: disabled" >&2
+fi
 
 # ---------- Configuration file selection (conf/*.conf) ----------
 CHOSEN_CONF=""
@@ -217,6 +256,7 @@ fi
 # ---------- Load properties from the chosen configuration file ----------
 env_args=()
 models_csv=""
+base_url_conf=""
 if [[ -n "$CHOSEN_CONF" ]]; then
   while IFS= read -r line || [[ -n "$line" ]]; do
     # trim leading/trailing whitespace
@@ -239,6 +279,8 @@ if [[ -n "$CHOSEN_CONF" ]]; then
       if [[ "${val:0:1}" == '"' && "${val: -1}" == '"' ]]; then val="${val:1:${#val}-2}"; fi
       if [[ "${val:0:1}" == "'" && "${val: -1}" == "'" ]]; then val="${val:1:${#val}-2}"; fi
     fi
+    # special key: --strict target (conf value wins over host env); still passed to the container
+    if [[ "$key" == "ANTHROPIC_BASE_URL" ]]; then base_url_conf="$val"; fi
     # special key: only for the model list, NOT passed to the container
     if [[ "$key" == "JAILED_MODELS" ]]; then
       models_csv="$val"
@@ -319,10 +361,127 @@ if [[ "$CUR_PATH" != "$HOME_PATH" ]]; then
   done
 fi
 
-# ---------- --isolated mode: blackhole the configured host list ----------
+# ---------- Network lockdown: --strict (egress pinning) or --isolated (blocklist) ----------
 extra_args=()
-hosts_tmp=""
-if [[ "$ISOLATED" == "1" ]]; then
+if [[ "$STRICT" == "1" ]]; then
+
+  # ----- Target: ANTHROPIC_BASE_URL from the selected conf, else host env -----
+  BASE_URL="${base_url_conf:-${ANTHROPIC_BASE_URL:-}}"
+  if [[ -z "$BASE_URL" ]]; then
+    die "--strict needs ANTHROPIC_BASE_URL (in the selected conf file or in your environment)."
+  fi
+  # Host-env fallback: forward it, or Claude Code would default to the (blocked) Anthropic API
+  if [[ -z "$base_url_conf" ]]; then env_args+=(-e "ANTHROPIC_BASE_URL=$BASE_URL"); fi
+  # No telemetry/auto-update/error reporting: it could only hit the drop policy (appended last: wins over the conf)
+  env_args+=(-e "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1")
+
+  # ----- Parse scheme://[user@]host[:port][/path?query#frag] -----
+  if ! [[ "$BASE_URL" =~ ^([A-Za-z][A-Za-z0-9+.-]*)://(.+)$ ]]; then
+    die "ANTHROPIC_BASE_URL is not a valid URL: '$BASE_URL'"
+  fi
+  SCHEME="${BASH_REMATCH[1],,}"
+  REST="${BASH_REMATCH[2]}"
+  case "$SCHEME" in
+    http|https) ;;
+    *) die "unsupported scheme '$SCHEME' in ANTHROPIC_BASE_URL (only http/https)" ;;
+  esac
+  HOSTPORT="${REST%%[/?#]*}"                # authority: cut at first / ? or #
+  HOSTPORT="${HOSTPORT##*@}"                # then drop userinfo, if any (an '@' in the path is not userinfo)
+  case "$HOSTPORT" in
+    \[*) die "IPv6 targets are not supported by --strict (got '$BASE_URL')" ;;
+  esac
+  colons="${HOSTPORT//[^:]/}"               # keep only the ':' characters
+  if (( ${#colons} > 1 )); then
+    die "IPv6 targets are not supported by --strict (got '$BASE_URL')"
+  fi
+  T_HOST="${HOSTPORT%%:*}"
+  if [[ "$HOSTPORT" == *:* ]]; then T_PORT="${HOSTPORT##*:}"; else T_PORT=""; fi
+  if [[ -z "$T_HOST" ]]; then die "no host in ANTHROPIC_BASE_URL: '$BASE_URL'"; fi
+  if [[ -z "$T_PORT" ]]; then
+    if [[ "$SCHEME" == "http" ]]; then T_PORT=80; else T_PORT=443; fi
+  else
+    if ! [[ "$T_PORT" =~ ^[0-9]{1,5}$ ]]; then die "invalid port in ANTHROPIC_BASE_URL: '$T_PORT'"; fi
+    if (( T_PORT < 1 || T_PORT > 65535 )); then die "port out of range in ANTHROPIC_BASE_URL: $T_PORT"; fi
+  fi
+
+  # ----- Resolve to IPv4 on the host (fail-closed) -----
+  STRICT_IPS=()
+  if valid_ipv4 "$T_HOST"; then
+    STRICT_IPS=("$T_HOST")                  # IP-literal target (e.g. a private gateway)
+  else
+    if ! [[ "$T_HOST" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]]; then
+      die "invalid hostname: '$T_HOST'"
+    fi
+    if command -v getent >/dev/null 2>&1; then
+      RESOLVED="$(getent ahostsv4 "$T_HOST" 2>/dev/null | awk '{print $1}' || true)"
+    elif command -v dig >/dev/null 2>&1; then
+      RESOLVED="$(dig +short A "$T_HOST" 2>/dev/null || true)"
+    else
+      die "need 'getent' or 'dig' on the host to resolve '$T_HOST'"
+    fi
+    while IFS= read -r ip; do
+      if [[ -n "$ip" ]] && valid_ipv4 "$ip"; then STRICT_IPS+=("$ip"); fi
+    done <<< "$(printf '%s\n' "$RESOLVED" | sort -u)"
+  fi
+  if (( ${#STRICT_IPS[@]} == 0 )); then
+    die "'$T_HOST' did not resolve to any IPv4 address (fail-closed; IPv6-only targets are unsupported)."
+  fi
+  echo ">> --strict target: $T_HOST port $T_PORT -> ${STRICT_IPS[*]}" >&2
+
+  # ----- Pin hostname -> IPs in /etc/hosts, kill all other DNS resolution -----
+  hosts_tmp="$(mktemp -d)"
+  {
+    echo "127.0.0.1 localhost"
+    echo "::1       localhost ip6-localhost ip6-loopback"
+    for ip in "${STRICT_IPS[@]}"; do echo "$ip $T_HOST"; done
+  } > "$hosts_tmp/hosts"
+
+  resolv_file="$(mktemp)"
+  printf 'nameserver 127.0.0.53\n' > "$resolv_file"   # dead: non-target lookups fail fast
+
+  # ----- Sidecar applies the nftables pin in a fresh netns, main joins it -----
+  sidecar_name="jailed_strict_$$"
+  strict_net="jailed_strict_net_$$"
+
+  docker network create "$strict_net" >/dev/null || die "failed to create network '$strict_net'"
+
+  docker run -d \
+    --name "$sidecar_name" \
+    --network "$strict_net" \
+    --cap-drop=ALL --cap-add=NET_ADMIN \
+    --security-opt no-new-privileges \
+    -e STRICT_TARGET_IPS="${STRICT_IPS[*]}" \
+    -e STRICT_TARGET_PORT="$T_PORT" \
+    "$IMAGE" /usr/local/lib/jailed-claude/strict-init.sh >/dev/null \
+    || die "failed to start the strict sidecar (check 'docker ps -a --filter name=jailed_strict' for orphans)"
+
+  # Readiness wait — fail-closed. Distinguishes "slow to start" from "failed":
+  # an exited sidecar is reported immediately with its logs (which carry the
+  # strict-init failure reason, e.g. missing 'nft' on a custom image).
+  READY_TIMEOUT="${JAILED_STRICT_READY_TIMEOUT:-15}"
+  [[ "$READY_TIMEOUT" =~ ^[0-9]+$ ]] || READY_TIMEOUT=15
+  ready=0
+  for (( i = 0; i < READY_TIMEOUT * 2; i++ )); do
+    if docker exec "$sidecar_name" test -f /run/jailed-strict-ready >/dev/null 2>&1; then
+      ready=1; break
+    fi
+    state="$(docker inspect -f '{{.State.Status}}' "$sidecar_name" 2>/dev/null || true)"
+    if [[ "$state" == "exited" ]]; then
+      echo "!! --strict: sidecar exited before applying the ruleset:" >&2
+      docker logs "$sidecar_name" >&2 || true
+      exit 1
+    fi
+    sleep 0.5
+  done
+  if (( ready == 0 )); then
+    die "--strict: sidecar not ready within ${READY_TIMEOUT}s (tune with JAILED_STRICT_READY_TIMEOUT)."
+  fi
+
+  extra_args+=(--network "container:$sidecar_name")
+  extra_args+=(-v "$hosts_tmp/hosts:/etc/hosts:ro" -v "$resolv_file:/etc/resolv.conf:ro")
+  echo ">> --strict active: egress pinned to $T_HOST (tcp/$T_PORT) — everything else is dropped at L3." >&2
+
+elif [[ "$ISOLATED" == "1" ]]; then
   # Validate the blocklist: skip malformed entries, but abort if nothing valid
   # remains (an empty list would silently disable isolation).
   valid_hosts=()
@@ -339,7 +498,6 @@ if [[ "$ISOLATED" == "1" ]]; then
   fi
 
   hosts_tmp="$(mktemp -d)"
-  trap 'rm -rf "$hosts_tmp"' EXIT
   {
     echo "127.0.0.1 localhost"
     echo "::1       localhost ip6-localhost ip6-loopback"
@@ -353,7 +511,10 @@ if [[ "$ISOLATED" == "1" ]]; then
 fi
 
 # ---------- host.docker.internal mapping (JAILED_ALLOW_INTERNAL, default: enabled) ----------
-if [[ "$ALLOW_INTERNAL" == "1" ]]; then
+if [[ "$STRICT" == "1" ]]; then
+  # Forced off in strict mode (and avoids --add-host on a --network container: run).
+  echo ">> host.docker.internal: NOT mapped (forced off in --strict mode)." >&2
+elif [[ "$ALLOW_INTERNAL" == "1" ]]; then
   extra_args+=(--add-host=host.docker.internal:host-gateway)
 else
   echo ">> host.docker.internal: NOT mapped (JAILED_ALLOW_INTERNAL=${JAILED_ALLOW_INTERNAL})." >&2

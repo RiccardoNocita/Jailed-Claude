@@ -19,7 +19,7 @@
 #
 # Author: <riccardo.noc@gmail.com>
 #
-# v: 1.0.0
+# v: 1.1.0
 #
 # Github repo: https://github.com/RiccardoNocita/Jailed-Claude
 #
@@ -32,7 +32,7 @@ INSTALL_DIR="${JAILED_CLAUDE_HOME:-$HOME/.local/share/jailed-claude}"
 CMD_NAME="jailed-claude"                               # command name to expose on PATH
 
 # Repo paths (relative to repo root) that are required to run:
-REQUIRED_FILES=("jailed-claude" "Dockerfile.jailed-claude")  # mandatory
+REQUIRED_FILES=("jailed-claude" "Dockerfile.jailed-claude" "strict-init.sh")  # mandatory
 REQUIRED_DIRS=("conf")                                       # merged, user additions kept
 
 TARBALL_URL="https://github.com/${REPO}/archive/refs/heads/${BRANCH}.tar.gz"
