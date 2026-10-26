@@ -29,9 +29,9 @@ jailed-claude
 ``````
 
 ```bash
->> Isolate the container (blackhole the upstream host list)? (Enter = yes, 'n' = no): 
+>> Select the network isolation mode
 
-# yes or enter
+# isolated
 ``````
 
 ```bash

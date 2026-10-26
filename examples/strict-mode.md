@@ -26,11 +26,16 @@ EOF
 ``````
 
 ```bash
-jailed-claude --strict
+jailed-claude
 ``````
 
 ```bash
->> Network isolation: strict (all egress pinned to ANTHROPIC_BASE_URL)
+>> Select the network isolation mode
+
+# strict
+``````
+
+```bash
 Select a configuration file
 
 # strict.conf
