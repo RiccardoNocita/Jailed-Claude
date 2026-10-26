@@ -81,13 +81,17 @@ Take a look at the [scenario examples](./examples/).
 ### Requirements
 - Docker Engine ≥ 20.10 (or Docker Desktop)
 - `bash`, and `curl` or `wget`
-- *(optional)* [`fzf`](https://github.com/junegunn/fzf) for the fuzzy picker
+- *(optional)* [`fzf`](https://github.com/junegunn/fzf) for the fuzzy picker (installed automatically by the installer, see below)
 
 ### One-liner
 ```bash
 curl -fsSL https://raw.githubusercontent.com/RiccardoNocita/Jailed-Claude/master/install.sh | bash
 ```
 The installer downloads the needed files from this repo into `~/.local/share/jailed-claude` and symlinks the command onto your `PATH`.
+If `fzf` is missing, it also tries to install it with the system package manager (brew, apt-get, dnf, yum, pacman, zypper, apk — may ask for `sudo`). To skip that step:
+```bash
+curl -fsSL https://raw.githubusercontent.com/RiccardoNocita/Jailed-Claude/master/install.sh | INSTALL_FZF=0 bash
+```
 
 ## Usage
 

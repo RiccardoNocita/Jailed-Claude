@@ -178,15 +178,43 @@ fi
 
 # ---------- Isolation choice (only if neither flag was given) ----------
 if [[ "$STRICT" != "1" && "$ISOLATED" != "1" ]]; then
+  iso_modes=(
+    $'isolated\tBlackholes the configured hosts, every other destination stays reachable. Isolated hosts: ['"$BLOCK_HOSTS]"
+    $'normal\tNo network isolation: the container can reach any host.'
+    $'strict\tL3 egress pinning: only ANTHROPIC_BASE_URL (default value if empty or from conf/env) is reachable, everything else is dropped.'
+  )
+  mode="isolated"               # default, also for non-interactive runs
   if [[ -t 0 ]]; then
-    read -rp ">> Isolate the container (blackhole the upstream host list)? (Enter = yes, 'n' = no): " ans || true
-    case "${ans,,}" in
-      n|no|f|false|0) ISOLATED=0 ;;
-      *) ISOLATED=1 ;;          # default and any other answer -> isolated
-    esac
-  else
-    ISOLATED=1                  # non-interactive: default = isolated
+    if command -v fzf >/dev/null 2>&1; then
+      chosen="$(printf '%s\n' "${iso_modes[@]}" \
+        | fzf --prompt "Isolation> " --header "Select the network isolation mode" \
+              --delimiter $'\t' --with-nth 1 \
+              --preview 'echo {2..}' --preview-window 'down:3:wrap')" || true
+      [[ -n "$chosen" ]] && mode="${chosen%%$'\t'*}"
+    else
+      echo ">> Select the network isolation mode:" >&2
+      for i in "${!iso_modes[@]}"; do
+        printf "   %d) %-9s %s\n" "$((i+1))" "${iso_modes[$i]%%$'\t'*}" "${iso_modes[$i]#*$'\t'}" >&2
+      done
+      while true; do
+        read -rp ">> Choice [1-${#iso_modes[@]}] (Enter = 1): " choice || { echo ">> No input." >&2; exit 130; }
+        [[ -z "$choice" ]] && break
+        if [[ "$choice" =~ ^[0-9]+$ ]] && (( ${#choice} <= 9 )); then
+          choice=$((10#$choice))   # force base 10 (avoids octal errors on e.g. "08")
+          if (( choice >= 1 && choice <= ${#iso_modes[@]} )); then
+            mode="${iso_modes[$((choice-1))]%%$'\t'*}"
+            break
+          fi
+        fi
+        echo ">> Invalid choice, try again." >&2
+      done
+    fi
   fi
+  case "$mode" in
+    strict)   STRICT=1 ;;
+    isolated) ISOLATED=1 ;;
+    normal)   ;;
+  esac
 fi
 if   [[ "$STRICT" == "1" ]]; then   echo ">> Network isolation: strict (all egress pinned to ANTHROPIC_BASE_URL)" >&2
 elif [[ "$ISOLATED" == "1" ]]; then echo ">> Network isolation: enabled (blocklist blackholed)" >&2
