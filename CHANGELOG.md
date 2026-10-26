@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.0
+
+### Improved
+- Implemented strict mode
+- fzf auto install
+- Minor fixes
+
 ## 1.0.2
 
 ### Improved
