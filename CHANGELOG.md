@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.1
+
+### Improved
+- Minor fix loading logo
+- Docs IDE integration
+
 ## 1.1.0
 
 ### Improved
