@@ -1,6 +1,6 @@
 # jailed-claude
 
-> Run [Claude Code](https://code.claude.com/) inside an isolated Docker sandbox — switch **LLM-provider profiles** with a single keystroke, keep your history intact, and optionally **cut the network off**.
+> Run [Claude Code](https://code.claude.com/) inside an isolated Docker sandbox — switch **LLM-provider profiles** with a single keystroke, keep your history intact, and optionally **cut the network off**. Result: a process isolated at the filesystem and/or network level, along with a convenient profile manager for LLM connections.
 
 ![Docker](https://img.shields.io/badge/requires-Docker-2496ED?logo=docker&logoColor=white)
 ![Shell](https://img.shields.io/badge/Shell-bash-4EAA25?logo=gnubash&logoColor=white)
@@ -20,7 +20,20 @@ curl -fsSL https://raw.githubusercontent.com/RiccardoNocita/Jailed-Claude/master
 jailed-claude
 ```
 
+## Scenario
+
 Take a look at the [scenario examples](./examples/).
+
+## IDE Integration
+
+Jailed Claude ready in your IDE
+
+![](docs/ide.png)
+
+Official support:
+
+- [IDE jetbrains](./ide/jetbrains.md) - All IDEs in the suite are supported.
+- _Updating List ..._
 
 ## What it is (and isn't)
 

@@ -129,6 +129,8 @@ claude_galera() {
     printf '%s\n' "$R"
   done
   printf '\n      %sJailed Claude - By R.N.%s\n\n' "$B" "$R"
+  printf '               Loading...'
+  sleep 2
 }
 
 
