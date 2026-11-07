@@ -1,5 +1,14 @@
 # Changelog
 
+---
+## Unreleased
+
+### Added
+- `JAILED_HIDDEN_PATHS`: hide files/folders of the working dir behind empty decoys mounted from `/tmp`; settable from the host env and/or the selected conf file (lists are merged)
+
+
+---
+
 ## 1.1.1
 
 ### Improved

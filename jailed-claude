@@ -33,11 +33,13 @@ trap 'printf "\n>> Interrupted.\n" >&2; exit 130' INT
 # abort the rest of the teardown mid-trap.
 hosts_tmp=""
 resolv_file=""
+hidden_tmp=""
 sidecar_name=""
 strict_net=""
 cleanup() {
   trap - EXIT INT TERM
   [[ -n "$hosts_tmp" ]] && rm -rf "$hosts_tmp" || true
+  [[ -n "$hidden_tmp" ]] && rm -rf "$hidden_tmp" || true
   [[ -n "$resolv_file" ]] && rm -f "$resolv_file" || true
   if [[ -n "$sidecar_name" ]]; then docker rm -f "$sidecar_name" >/dev/null 2>&1 || true; fi
   if [[ -n "$strict_net" ]]; then docker network rm "$strict_net" >/dev/null 2>&1 || true; fi
@@ -287,6 +289,7 @@ fi
 env_args=()
 models_csv=""
 base_url_conf=""
+hidden_conf=""
 if [[ -n "$CHOSEN_CONF" ]]; then
   while IFS= read -r line || [[ -n "$line" ]]; do
     # trim leading/trailing whitespace
@@ -314,6 +317,11 @@ if [[ -n "$CHOSEN_CONF" ]]; then
     # special key: only for the model list, NOT passed to the container
     if [[ "$key" == "JAILED_MODELS" ]]; then
       models_csv="$val"
+      continue
+    fi
+    # special key: merged with the host env JAILED_HIDDEN_PATHS, NOT passed to the container
+    if [[ "$key" == "JAILED_HIDDEN_PATHS" ]]; then
+      hidden_conf="$val"
       continue
     fi
     env_args+=(-e "$key=$val")
@@ -389,6 +397,53 @@ if [[ "$CUR_PATH" != "$HOME_PATH" ]]; then
     [[ -e "$src" ]] || continue
     volumes+=(-v "$src:$src:ro")
   done
+fi
+
+# ---------- Hidden paths (JAILED_HIDDEN_PATHS, colon separated) ----------
+# Union of the host env and the selected conf (hiding more is always safer).
+# Each entry (relative to cwd, or absolute inside cwd) is shadowed by an empty,
+# read-only dir/file living in a throwaway /tmp folder: mounted after the cwd,
+# it masks the real content inside the container.
+hidden_paths="${JAILED_HIDDEN_PATHS:-}${JAILED_HIDDEN_PATHS:+${hidden_conf:+:}}$hidden_conf"
+if [[ -n "$hidden_paths" ]]; then
+  IFS=':' read -r -a hidden_entries <<< "$hidden_paths"
+  hidden_list=()
+  for entry in ${hidden_entries[@]+"${hidden_entries[@]}"}; do
+    [[ -z "$entry" ]] && continue
+    [[ "$entry" == /* ]] || entry="$CUR_PATH/$entry"
+    while [[ "$entry" == */ && "$entry" != "/" ]]; do entry="${entry%/}"; done
+    if [[ "/$entry/" == */../* ]]; then
+      echo "!! JAILED_HIDDEN_PATHS: '$entry' contains '..': skipped." >&2; continue
+    fi
+    if [[ -L "$entry" ]]; then
+      echo "!! JAILED_HIDDEN_PATHS: '$entry' is a symlink: skipped (list its target instead)." >&2; continue
+    fi
+    if [[ ! -e "$entry" ]]; then
+      echo "!! JAILED_HIDDEN_PATHS: '$entry' does not exist: skipped." >&2; continue
+    fi
+    # Resolve symlinked parents, then require the path to sit strictly inside cwd.
+    real="$(cd "$(dirname "$entry")" && pwd -P)/$(basename "$entry")"
+    real_cwd="$(cd "$CUR_PATH" && pwd -P)"
+    if [[ "$real" != "$real_cwd"/* ]]; then
+      echo "!! JAILED_HIDDEN_PATHS: '$entry' is outside the working dir: skipped." >&2; continue
+    fi
+    # Mount at the path as seen in the container (cwd is mounted at $CUR_PATH).
+    target="$CUR_PATH${real#"$real_cwd"}"
+    # Same path listed twice (e.g. in env and conf): docker rejects duplicate mount points.
+    dup=0
+    for h in ${hidden_list[@]+"${hidden_list[@]}"}; do
+      [[ "$h" == "${target#"$CUR_PATH"/}" ]] && { dup=1; break; }
+    done
+    (( dup )) && continue
+    [[ -n "$hidden_tmp" ]] || hidden_tmp="$(mktemp -d)"
+    decoy="$hidden_tmp/${#hidden_list[@]}"
+    if [[ -d "$real" ]]; then mkdir "$decoy"; else : > "$decoy"; fi
+    volumes+=(-v "$decoy:$target:ro")
+    hidden_list+=("${target#"$CUR_PATH"/}")
+  done
+  if (( ${#hidden_list[@]} > 0 )); then
+    echo ">> Hidden paths (${#hidden_list[@]}): ${hidden_list[*]}" >&2
+  fi
 fi
 
 # ---------- Network lockdown: --strict (egress pinning) or --isolated (blocklist) ----------
