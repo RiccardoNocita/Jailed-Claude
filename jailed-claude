@@ -58,6 +58,21 @@ valid_ipv4() {
   done
 }
 
+# Physical path of an existing file/dir, every symlink resolved (portable, no realpath).
+resolve_path() {
+  local p="$1" d
+  while [[ -L "$p" ]]; do
+    d="$(cd "$(dirname "$p")" && pwd -P)"
+    p="$(readlink "$p")"
+    [[ "$p" != /* ]] && p="$d/$p"
+  done
+  if [[ -d "$p" ]]; then (cd "$p" && pwd -P)
+  else printf '%s/%s\n' "$(cd "$(dirname "$p")" && pwd -P)" "$(basename "$p")"; fi
+}
+
+# True when $1 and $2 are the same path or one contains the other.
+overlaps() { [[ "$1" == "$2" || "$1" == "$2"/* || "$2" == "$1"/* ]]; }
+
 # Resolve this script's real path, following symlinks (so a PATH symlink works)
 _SRC="${BASH_SOURCE[0]}"
 while [[ -h "$_SRC" ]]; do
@@ -290,6 +305,7 @@ env_args=()
 models_csv=""
 base_url_conf=""
 hidden_conf=""
+expose_conf=""
 if [[ -n "$CHOSEN_CONF" ]]; then
   while IFS= read -r line || [[ -n "$line" ]]; do
     # trim leading/trailing whitespace
@@ -322,6 +338,11 @@ if [[ -n "$CHOSEN_CONF" ]]; then
     # special key: merged with the host env JAILED_HIDDEN_PATHS, NOT passed to the container
     if [[ "$key" == "JAILED_HIDDEN_PATHS" ]]; then
       hidden_conf="$val"
+      continue
+    fi
+    # special key: merged with the host env JAILED_EXPOSE_PATHS, NOT passed to the container
+    if [[ "$key" == "JAILED_EXPOSE_PATHS" ]]; then
+      expose_conf="$val"
       continue
     fi
     env_args+=(-e "$key=$val")
@@ -397,6 +418,87 @@ if [[ "$CUR_PATH" != "$HOME_PATH" ]]; then
     [[ -e "$src" ]] || continue
     volumes+=(-v "$src:$src:ro")
   done
+fi
+
+# ---------- Exposed paths (JAILED_EXPOSE_PATHS, colon separated) ----------
+# Union of the host env and the selected conf. Each entry is an absolute (or
+# ~-prefixed) path OUTSIDE the working dir, bind-mounted at the same path inside
+# the container: read-write by default, read-only when followed by ':ro'
+# (e.g. "~/.m2:~/.gitconfig:ro"). Entries that would defeat the jail are refused:
+# /, the home itself, system dirs, container sockets, anything overlapping the
+# working dir (it would bypass JAILED_HIDDEN_PATHS) or the jail-managed config.
+expose_paths="${JAILED_EXPOSE_PATHS:-}${JAILED_EXPOSE_PATHS:+${expose_conf:+:}}$expose_conf"
+if [[ -n "$expose_paths" ]]; then
+  IFS=':' read -r -a expose_entries <<< "$expose_paths"
+  real_cwd="$(cd "$CUR_PATH" && pwd -P)"
+  real_home="$(cd "$HOME_PATH" && pwd -P)"
+  # Checked both lexically (the mount point) and physically (what is really mounted).
+  guarded=("$CUR_PATH" "$real_cwd")
+  for rel in "${WHITELIST[@]}"; do
+    guarded+=("$HOME_PATH/$rel")
+    if [[ -e "$HOME_PATH/$rel" ]]; then guarded+=("$(resolve_path "$HOME_PATH/$rel")"); fi
+  done
+  expose_list=()
+  expose_targets=()
+  for (( i = 0; i < ${#expose_entries[@]}; i++ )); do
+    entry="${expose_entries[i]}"
+    [[ -z "$entry" ]] && continue
+    if [[ "$entry" == "ro" || "$entry" == "rw" ]]; then
+      echo "!! JAILED_EXPOSE_PATHS: '$entry' is not preceded by a path: skipped." >&2; continue
+    fi
+    # Optional mode token right after the path (same syntax as docker -v)
+    emode="rw"
+    next="${expose_entries[i+1]:-}"
+    if [[ "$next" == "ro" || "$next" == "rw" ]]; then emode="$next"; i=$((i+1)); fi
+    [[ "$entry" == "~" || "$entry" == "~/"* ]] && entry="$HOME_PATH${entry:1}"
+    if [[ "$entry" != /* ]]; then
+      echo "!! JAILED_EXPOSE_PATHS: '$entry' is not absolute (use /... or ~/...): skipped." >&2; continue
+    fi
+    while [[ "$entry" == */ && "$entry" != "/" ]]; do entry="${entry%/}"; done
+    if [[ "/$entry/" == */../* ]]; then
+      echo "!! JAILED_EXPOSE_PATHS: '$entry' contains '..': skipped." >&2; continue
+    fi
+    if [[ ! -e "$entry" ]]; then
+      echo "!! JAILED_EXPOSE_PATHS: '$entry' does not exist: skipped." >&2; continue
+    fi
+    real="$(resolve_path "$entry")"
+    refused=""
+    for p in "$entry" "$real"; do
+      if [[ "$p" == "/" ]]; then refused="it is the root filesystem"
+      elif [[ "$p" == "$HOME_PATH" || "$HOME_PATH" == "$p"/* || "$p" == "$real_home" || "$real_home" == "$p"/* ]]; then
+        refused="it would expose the whole home"
+      else
+        case "$p" in
+          /bin|/boot|/dev|/etc|/lib|/lib32|/lib64|/libx32|/proc|/run|/sbin|/sys|/usr|/var|/var/run|/dev/*|/proc/*|/sys/*)
+            refused="it is a system path" ;;
+          */docker.sock|*/podman.sock|*/containerd.sock)
+            refused="it is a container runtime socket (host escape)" ;;
+        esac
+      fi
+      [[ -n "$refused" ]] && break
+      for g in "${guarded[@]}"; do
+        overlaps "$p" "$g" && { refused="it overlaps '$g', already managed by the jail"; break 2; }
+      done
+    done
+    if [[ -n "$refused" ]]; then
+      echo "!! JAILED_EXPOSE_PATHS: '$entry' refused: $refused." >&2; continue
+    fi
+    # Same path listed twice (e.g. in env and conf): docker rejects duplicate mount points.
+    dup=0
+    for t in ${expose_targets[@]+"${expose_targets[@]}"}; do
+      [[ "$t" == "$entry" ]] && { dup=1; break; }
+    done
+    (( dup )) && continue
+    # Mount the checked physical path at the path the user named.
+    volumes+=(-v "$real:$entry:$emode")
+    expose_targets+=("$entry")
+    shown="$entry"
+    [[ "$entry" == "$HOME_PATH"/* ]] && shown="~${entry#"$HOME_PATH"}"
+    expose_list+=("$shown($emode)")
+  done
+  if (( ${#expose_list[@]} > 0 )); then
+    echo ">> Exposed paths (${#expose_list[@]}): ${expose_list[*]}" >&2
+  fi
 fi
 
 # ---------- Hidden paths (JAILED_HIDDEN_PATHS, colon separated) ----------

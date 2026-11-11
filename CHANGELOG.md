@@ -5,6 +5,7 @@
 
 ### Added
 - `JAILED_HIDDEN_PATHS`: hide files/folders of the working dir behind empty decoys mounted from `/tmp`; settable from the host env and/or the selected conf file (lists are merged)
+- `JAILED_EXPOSE_PATHS`: mount folders/files outside the working dir (e.g. `~/.m2` to reuse the Maven cache) at the same path, read-write or `:ro`; dangerous entries (`/`, home, system dirs, container sockets, working dir, `~/.claude`) are refused; settable from the host env and/or the selected conf file (lists are merged)
 
 
 ---

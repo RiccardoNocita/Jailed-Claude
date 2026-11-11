@@ -65,6 +65,7 @@ Official support:
 | Working dir | Your current folder is bind-mounted at the **same path** inside the container |
 | Home | Only `~/.claude/` and `~/.claude.json` are mounted — nothing else in `$HOME` is exposed |
 | Hidden paths | Entries in `JAILED_HIDDEN_PATHS` (e.g. `.env`, `secrets/`) are shadowed by empty read-only decoys from a throwaway `/tmp` folder — their real content never reaches the container |
+| Exposed paths | Entries in `JAILED_EXPOSE_PATHS` (e.g. `~/.m2` to reuse the Maven cache) are bind-mounted at the **same path**, read-write or `:ro` — an explicit opt-in for folders outside the working dir; `/`, the home itself, system dirs, container sockets and anything overlapping the working dir or `~/.claude` are refused |
 | User | Runs as your host UID:GID (no root, no stray files) |
 | Capabilities | `--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--init` |
 | Host reachability | `host.docker.internal` mapped to the host by default (for local gateways) — disable with `JAILED_ALLOW_INTERNAL=0`; forced off in strict mode |
@@ -195,6 +196,7 @@ Requirements: `http(s)` scheme, host resolvable to at least one IPv4 address (IP
 |---|---|
 | `JAILED_MODELS` | Comma-separated model IDs offered in the picker (`default` is always added) |
 | `JAILED_HIDDEN_PATHS` | Colon-separated paths to hide from the container (same syntax as the env variable below). Merged with the host env value, **not** passed to the container |
+| `JAILED_EXPOSE_PATHS` | Colon-separated paths outside the working dir to mount into the container (same syntax as the env variable below). Merged with the host env value, **not** passed to the container |
 | any other `KEY=VALUE` | Passed to the container as an environment variable (e.g. `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`) |
 
 > Values are read **verbatim to the end of the line**: there is no inline-comment support, so put `#` comments on their own line. Surrounding single/double quotes are stripped and an optional `export ` prefix is tolerated.
@@ -209,6 +211,7 @@ Requirements: `http(s)` scheme, host resolvable to at least one IPv4 address (IP
 | `ANTHROPIC_BASE_URL` | In a conf file (or your environment, as fallback): besides being passed to Claude Code, it becomes the **only allowed endpoint** in `--strict` mode — see *Strict mode* |
 | `JAILED_ALLOW_INTERNAL` | Map `host.docker.internal` to the host gateway. Default: enabled; set `0`/`false`/`no`/`off` to drop the mapping (gateway profiles that use that hostname will then fail) |
 | `JAILED_HIDDEN_PATHS` | Colon-separated paths (relative to the working dir, or absolute inside it) to hide from the container, e.g. `.env:secrets:config/prod.key`. Each one is bind-mounted, after the working dir, onto an empty read-only dir/file in a temp folder under `/tmp` (removed on exit). Missing paths, symlinks, `..` entries and paths outside the working dir are skipped with a warning. Can also be set in a conf file: the two lists are merged (duplicates ignored) |
+| `JAILED_EXPOSE_PATHS` | Colon-separated absolute (or `~/`-prefixed) paths **outside** the working dir to mount at the same path inside the container, e.g. `~/.m2:~/.gitconfig:ro`. Read-write by default; an `ro` (or `rw`) token right after a path sets its mode, like `docker -v`. Symlinks are resolved and the real target is checked and mounted. Missing, relative and `..` entries are skipped; `/`, the home itself (or its parents), system dirs (`/etc`, `/usr`, `/proc`, ...), container runtime sockets and anything overlapping the working dir or `~/.claude{,.json}` are refused, each with a warning. Can also be set in a conf file: the two lists are merged (duplicates ignored) |
 
 ## Project layout
 ```
@@ -225,7 +228,7 @@ jailed-claude/
 ```
 
 ## Security notes
-- The container only ever sees your CWD + `~/.claude{,.json}`; the rest of your filesystem is invisible to it.
+- The container only ever sees your CWD + `~/.claude{,.json}` (+ whatever you explicitly list in `JAILED_EXPOSE_PATHS`); the rest of your filesystem is invisible to it.
 - All Linux capabilities are dropped and privilege escalation is disabled.
 - In isolated mode, egress to the listed upstreams is cut at the name-resolution layer (see *Limitations* in the Isolated mode section).
 - In strict mode, egress is enforced at **L3** by nftables in a shared network namespace: only the pinned `ANTHROPIC_BASE_URL` host:port (TCP) is reachable — including against raw-IP connections — and the jailed container has no capability to modify the ruleset.
