@@ -11,12 +11,12 @@
 #
 # Author: <riccardo.noc@gmail.com>
 #
-# v: 1.1.1
+# v: 1.2.0
 #
 # Github repo: https://github.com/RiccardoNocita/Jailed-Claude
 #
 
-VERSION="1.1.1"
+VERSION="1.2.0"
 
 set -euo pipefail
 

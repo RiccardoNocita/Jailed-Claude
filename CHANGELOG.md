@@ -1,18 +1,13 @@
 # Changelog
 
 ---
-## Unreleased
+
+## 1.2.0
 
 ### Added
 - `JAILED_HIDDEN_PATHS`: hide files/folders of the working dir behind empty decoys mounted from `/tmp`; settable from the host env and/or the selected conf file (lists are merged)
 - `JAILED_EXPOSE_PATHS`: mount folders/files outside the working dir (e.g. `~/.m2` to reuse the Maven cache) at the same path, read-write or `:ro`; dangerous entries (`/`, home, system dirs, container sockets, working dir, `~/.claude`) are refused; settable from the host env and/or the selected conf file (lists are merged)
 - `JAILED_STRICT_ALLOWED_HOSTS`: extra endpoints (`host`, `host:port`, `ip`, `ip:port`; comma/space separated) allowed in `--strict` mode on top of the `ANTHROPIC_BASE_URL` one; settable from the host env and/or the selected conf file (lists are merged). Entries without a port allow every TCP port of that host
-
-### Changed
-- `--strict` sidecar protocol: `strict-init.sh` now takes a single `STRICT_ALLOW` list
-
-
----
 
 ## 1.1.1
 
