@@ -5,10 +5,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl git bash less ripgrep nftables \
     && rm -rf /var/lib/apt/lists/*
 
+## Customize - start
+
+## Customize - end
+
 # Claude Code CLI (native, command: claude)
 RUN npm install -g @anthropic-ai/claude-code
 
-# --strict sidecar init (pins the netns egress to a single host:port via nftables)
+# --strict sidecar init (pins the netns egress to an allowlist of ip[:port] via nftables)
 COPY strict-init.sh /usr/local/lib/jailed-claude/strict-init.sh
 RUN chmod 0755 /usr/local/lib/jailed-claude/strict-init.sh
 

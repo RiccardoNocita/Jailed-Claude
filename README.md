@@ -52,7 +52,7 @@ Official support:
 - 🧠 History & config preserved: only `~/.claude/` and `~/.claude.json` are bind-mounted
 - 🎯 Interactive model picker (fuzzy with [fzf](https://github.com/junegunn/fzf), numeric fallback) — `default` lets Claude decide
 - 🔒 Isolated mode that blackholes the upstream domains (privacy / no telemetry / no auto-updates)
-- 🎛️ Strict mode (`--strict`) that pins **all** egress to the single `ANTHROPIC_BASE_URL` endpoint via an L3 nftables firewall — everything else is dropped, even raw IPs
+- 🎛️ Strict mode (`--strict`) that pins **all** egress to the `ANTHROPIC_BASE_URL` endpoint (plus an optional `JAILED_STRICT_ALLOWED_HOSTS` allowlist) via an L3 nftables firewall — everything else is dropped, even raw IPs
 - 🛡️ Hardened container: drops all capabilities, `no-new-privileges`, runs as your UID/GID
 - ⌨️ Ctrl+C aborts any prompt; non-interactive friendly via env overrides
 - 📦 One-line remote install
@@ -69,7 +69,7 @@ Official support:
 | User | Runs as your host UID:GID (no root, no stray files) |
 | Capabilities | `--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--init` |
 | Host reachability | `host.docker.internal` mapped to the host by default (for local gateways) — disable with `JAILED_ALLOW_INTERNAL=0`; forced off in strict mode |
-| Egress (strict mode) | With `--strict`, all traffic is dropped at L3 except TCP to the `ANTHROPIC_BASE_URL` host:port (nftables in a shared netns — see *Strict mode*) |
+| Egress (strict mode) | With `--strict`, all traffic is dropped at L3 except TCP to the `ANTHROPIC_BASE_URL` host:port and the `JAILED_STRICT_ALLOWED_HOSTS` entries (nftables in a shared netns — see *Strict mode*) |
 | Image | Built on first run from `Dockerfile.jailed-claude` (`node:24-slim` + Claude Code + git/ripgrep/bash) |
 
 ## Installation
@@ -167,7 +167,7 @@ Malformed entries are skipped with a warning; if no valid host remains, the wrap
 > For a hard guarantee that works at L3 — not just name resolution — use `--strict` (*Strict mode* below): it drops **everything** except the pinned endpoint.
 
 ### Strict mode (egress pinning)
-`--isolated` blackholes a list of hosts at the name-resolution layer. `--strict` is the opposite and much stronger: the container may talk to **exactly one** endpoint — the host:port of `ANTHROPIC_BASE_URL` from your selected profile (or your environment, if the profile doesn't set it) — and *nothing else*.
+`--isolated` blackholes a list of hosts at the name-resolution layer. `--strict` is the opposite and much stronger: the container may talk to **exactly one** endpoint — the host:port of `ANTHROPIC_BASE_URL` from your selected profile (or your environment, if the profile doesn't set it) — and *nothing else*, unless you explicitly widen the allowlist with `JAILED_STRICT_ALLOWED_HOSTS` (see below).
 
 ```bash
 jailed-claude --strict   # with a profile whose ANTHROPIC_BASE_URL is your only allowed endpoint
@@ -180,6 +180,18 @@ How it works:
 - the main container joins that network namespace via `--network container:` **without** `NET_ADMIN`, so code inside the jail cannot flush or rewrite the ruleset;
 - `ANTHROPIC_BASE_URL` is forwarded to the container (also when it comes from your environment) and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` is forced, so Claude Code does not attempt telemetry, auto-updates or error reporting;
 - `host.docker.internal` is forced off and the `--isolated` blocklist is not applied (`--strict` supersedes it).
+
+**Extra endpoints — `JAILED_STRICT_ALLOWED_HOSTS`.** A comma- and/or space-separated list of `host`, `host:port`, `ip` or `ip:port` entries that are added to the `ANTHROPIC_BASE_URL` endpoint to form the (only) allowlist:
+
+```bash
+JAILED_STRICT_ALLOWED_HOSTS="10.10.10.20:5432, mcp.internal.lan:8080 192.168.1.50" jailed-claude --strict
+```
+
+- with a port, only that TCP port is allowed; **without a port, every TCP port** of that host is allowed (still TCP only);
+- hostnames are resolved to IPv4 on the host at launch and pinned in the container's `/etc/hosts`, exactly like the main target;
+- it can be set in your environment and/or in the selected conf file: the two lists are merged, and the key is **not** passed to the container;
+- a malformed entry (URL, IPv6, bad port, invalid hostname) or a host that does not resolve to IPv4 aborts the launch (fail-closed);
+- every extra entry is one more egress channel: the *What "one endpoint" really means* caveats below apply to each of them.
 
 Requirements: `http(s)` scheme, host resolvable to at least one IPv4 address (IP literals like `10.10.10.10` work too; IPv6-only targets are rejected). The sidecar and its network are removed automatically on exit (orphan recovery after a hard kill: `docker ps -a --filter name=jailed_strict`).
 
@@ -197,6 +209,7 @@ Requirements: `http(s)` scheme, host resolvable to at least one IPv4 address (IP
 | `JAILED_MODELS` | Comma-separated model IDs offered in the picker (`default` is always added) |
 | `JAILED_HIDDEN_PATHS` | Colon-separated paths to hide from the container (same syntax as the env variable below). Merged with the host env value, **not** passed to the container |
 | `JAILED_EXPOSE_PATHS` | Colon-separated paths outside the working dir to mount into the container (same syntax as the env variable below). Merged with the host env value, **not** passed to the container |
+| `JAILED_STRICT_ALLOWED_HOSTS` | Extra `--strict` endpoints (same syntax as the env variable below). Merged with the host env value, **not** passed to the container |
 | any other `KEY=VALUE` | Passed to the container as an environment variable (e.g. `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`) |
 
 > Values are read **verbatim to the end of the line**: there is no inline-comment support, so put `#` comments on their own line. Surrounding single/double quotes are stripped and an optional `export ` prefix is tolerated.
@@ -209,6 +222,7 @@ Requirements: `http(s)` scheme, host resolvable to at least one IPv4 address (IP
 | `JAILED_CLAUDE_BLOCK_HOSTS` | Space-separated hostnames to blackhole in isolated mode (default: Anthropic domains — see *Custom blocklist*) |
 | `JAILED_STRICT_READY_TIMEOUT` | Seconds to wait for the strict sidecar to apply its ruleset (default `15`) |
 | `ANTHROPIC_BASE_URL` | In a conf file (or your environment, as fallback): besides being passed to Claude Code, it becomes the **only allowed endpoint** in `--strict` mode — see *Strict mode* |
+| `JAILED_STRICT_ALLOWED_HOSTS` | Comma/space-separated `host`, `host:port`, `ip` or `ip:port` entries added to the `ANTHROPIC_BASE_URL` endpoint to form the `--strict` allowlist (no port = every TCP port of that host). Can also be set in a conf file: the two lists are merged — see *Strict mode* |
 | `JAILED_ALLOW_INTERNAL` | Map `host.docker.internal` to the host gateway. Default: enabled; set `0`/`false`/`no`/`off` to drop the mapping (gateway profiles that use that hostname will then fail) |
 | `JAILED_HIDDEN_PATHS` | Colon-separated paths (relative to the working dir, or absolute inside it) to hide from the container, e.g. `.env:secrets:config/prod.key`. Each one is bind-mounted, after the working dir, onto an empty read-only dir/file in a temp folder under `/tmp` (removed on exit). Missing paths, symlinks, `..` entries and paths outside the working dir are skipped with a warning. Can also be set in a conf file: the two lists are merged (duplicates ignored) |
 | `JAILED_EXPOSE_PATHS` | Colon-separated absolute (or `~/`-prefixed) paths **outside** the working dir to mount at the same path inside the container, e.g. `~/.m2:~/.gitconfig:ro`. Read-write by default; an `ro` (or `rw`) token right after a path sets its mode, like `docker -v`. Symlinks are resolved and the real target is checked and mounted. Missing, relative and `..` entries are skipped; `/`, the home itself (or its parents), system dirs (`/etc`, `/usr`, `/proc`, ...), container runtime sockets and anything overlapping the working dir or `~/.claude{,.json}` are refused, each with a warning. Can also be set in a conf file: the two lists are merged (duplicates ignored) |
@@ -231,7 +245,7 @@ jailed-claude/
 - The container only ever sees your CWD + `~/.claude{,.json}` (+ whatever you explicitly list in `JAILED_EXPOSE_PATHS`); the rest of your filesystem is invisible to it.
 - All Linux capabilities are dropped and privilege escalation is disabled.
 - In isolated mode, egress to the listed upstreams is cut at the name-resolution layer (see *Limitations* in the Isolated mode section).
-- In strict mode, egress is enforced at **L3** by nftables in a shared network namespace: only the pinned `ANTHROPIC_BASE_URL` host:port (TCP) is reachable — including against raw-IP connections — and the jailed container has no capability to modify the ruleset.
+- In strict mode, egress is enforced at **L3** by nftables in a shared network namespace: only the pinned `ANTHROPIC_BASE_URL` host:port and the `JAILED_STRICT_ALLOWED_HOSTS` entries (TCP) are reachable — including against raw-IP connections — and the jailed container has no capability to modify the ruleset.
 - For a stricter sandbox you can add `--read-only --tmpfs /tmp` to the run (see source).
 
 ## Uninstall
