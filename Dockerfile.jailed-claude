@@ -2,12 +2,13 @@ FROM node:24-slim
 
 # Tools (nftables backs the --strict egress-pinning sidecar)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl git bash less ripgrep nftables \
-    && rm -rf /var/lib/apt/lists/*
+      ca-certificates curl git bash less ripgrep nftables
 
 ## Customize - start
 
 ## Customize - end
+
+RUN rm -rf /var/lib/apt/lists/*
 
 # Claude Code CLI (native, command: claude)
 RUN npm install -g @anthropic-ai/claude-code
