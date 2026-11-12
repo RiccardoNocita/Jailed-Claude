@@ -58,6 +58,28 @@ valid_ipv4() {
   done
 }
 
+# --strict: resolve a hostname (or IPv4 literal) to its IPv4 addresses on the
+# host, one per line. Fail-closed: dies if nothing valid comes back.
+# $1 = host, $2 = label for error messages.
+strict_resolve() {
+  local host="$1" what="$2" resolved ip found=0
+  if valid_ipv4 "$host"; then echo "$host"; return 0; fi
+  if ! [[ "$host" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || [[ "$host" == *..* ]]; then
+    die "$what: invalid hostname '$host'"
+  fi
+  if command -v getent >/dev/null 2>&1; then
+    resolved="$(getent ahostsv4 "$host" 2>/dev/null | awk '{print $1}' || true)"
+  elif command -v dig >/dev/null 2>&1; then
+    resolved="$(dig +short A "$host" 2>/dev/null || true)"
+  else
+    die "need 'getent' or 'dig' on the host to resolve '$host'"
+  fi
+  while IFS= read -r ip; do
+    if [[ -n "$ip" ]] && valid_ipv4 "$ip"; then echo "$ip"; found=1; fi
+  done <<< "$(printf '%s\n' "$resolved" | sort -u)"
+  (( found )) || die "$what: '$host' did not resolve to any IPv4 address (fail-closed; IPv6-only targets are unsupported)."
+}
+
 # Resolve this script's real path, following symlinks (so a PATH symlink works)
 _SRC="${BASH_SOURCE[0]}"
 while [[ -h "$_SRC" ]]; do
@@ -185,7 +207,7 @@ if [[ "$STRICT" != "1" && "$ISOLATED" != "1" ]]; then
   iso_modes=(
     $'isolated\tBlackholes the configured hosts, every other destination stays reachable. Isolated hosts: ['"$BLOCK_HOSTS]"
     $'normal\tNo network isolation: the container can reach any host.'
-    $'strict\tL3 egress pinning: only ANTHROPIC_BASE_URL (default value if empty or from conf/env) is reachable, everything else is dropped.'
+    $'strict\tL3 egress pinning: only ANTHROPIC_BASE_URL (default value if empty or from conf/env) and JAILED_STRICT_ALLOWED_HOSTS are reachable, everything else is dropped.'
   )
   mode="isolated"               # default, also for non-interactive runs
   if [[ -t 0 ]]; then
@@ -220,7 +242,7 @@ if [[ "$STRICT" != "1" && "$ISOLATED" != "1" ]]; then
     normal)   ;;
   esac
 fi
-if   [[ "$STRICT" == "1" ]]; then   echo ">> Network isolation: strict (all egress pinned to ANTHROPIC_BASE_URL)" >&2
+if   [[ "$STRICT" == "1" ]]; then   echo ">> Network isolation: strict (all egress pinned to ANTHROPIC_BASE_URL + JAILED_STRICT_ALLOWED_HOSTS)" >&2
 elif [[ "$ISOLATED" == "1" ]]; then echo ">> Network isolation: enabled (blocklist blackholed)" >&2
 else                                echo ">> Network isolation: disabled" >&2
 fi
@@ -290,6 +312,7 @@ env_args=()
 models_csv=""
 base_url_conf=""
 hidden_conf=""
+strict_allowed_conf=""
 if [[ -n "$CHOSEN_CONF" ]]; then
   while IFS= read -r line || [[ -n "$line" ]]; do
     # trim leading/trailing whitespace
@@ -322,6 +345,11 @@ if [[ -n "$CHOSEN_CONF" ]]; then
     # special key: merged with the host env JAILED_HIDDEN_PATHS, NOT passed to the container
     if [[ "$key" == "JAILED_HIDDEN_PATHS" ]]; then
       hidden_conf="$val"
+      continue
+    fi
+    # special key: extra --strict allowlist, merged with the host env, NOT passed to the container
+    if [[ "$key" == "JAILED_STRICT_ALLOWED_HOSTS" ]]; then
+      strict_allowed_conf="$val"
       continue
     fi
     env_args+=(-e "$key=$val")
@@ -490,35 +518,67 @@ if [[ "$STRICT" == "1" ]]; then
   fi
 
   # ----- Resolve to IPv4 on the host (fail-closed) -----
-  STRICT_IPS=()
-  if valid_ipv4 "$T_HOST"; then
-    STRICT_IPS=("$T_HOST")                  # IP-literal target (e.g. a private gateway)
-  else
-    if ! [[ "$T_HOST" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]]; then
-      die "invalid hostname: '$T_HOST'"
-    fi
-    if command -v getent >/dev/null 2>&1; then
-      RESOLVED="$(getent ahostsv4 "$T_HOST" 2>/dev/null | awk '{print $1}' || true)"
-    elif command -v dig >/dev/null 2>&1; then
-      RESOLVED="$(dig +short A "$T_HOST" 2>/dev/null || true)"
-    else
-      die "need 'getent' or 'dig' on the host to resolve '$T_HOST'"
-    fi
-    while IFS= read -r ip; do
-      if [[ -n "$ip" ]] && valid_ipv4 "$ip"; then STRICT_IPS+=("$ip"); fi
-    done <<< "$(printf '%s\n' "$RESOLVED" | sort -u)"
-  fi
-  if (( ${#STRICT_IPS[@]} == 0 )); then
-    die "'$T_HOST' did not resolve to any IPv4 address (fail-closed; IPv6-only targets are unsupported)."
-  fi
+  # STRICT_ALLOW: nft allow entries, "ip:port" (that TCP port) or "ip" (any TCP port).
+  # STRICT_HOSTS: "ip hostname" lines pinned in the container's /etc/hosts.
+  STRICT_ALLOW=()
+  STRICT_HOSTS=()
+  strict_add() {   # $1 = entry to add, $2 = target array name (deduplicated)
+    local -n _arr="$2"
+    local e
+    for e in ${_arr[@]+"${_arr[@]}"}; do [[ "$e" == "$1" ]] && return 0; done
+    _arr+=("$1")
+  }
+  # $(...) not <(...): a die inside the resolver must abort the launch (exit status checked)
+  resolved_ips="$(strict_resolve "$T_HOST" "ANTHROPIC_BASE_URL")" || exit 1
+  mapfile -t STRICT_IPS <<< "$resolved_ips"
+  for ip in "${STRICT_IPS[@]}"; do
+    strict_add "$ip:$T_PORT" STRICT_ALLOW
+    valid_ipv4 "$T_HOST" || strict_add "$ip $T_HOST" STRICT_HOSTS
+  done
   echo ">> --strict target: $T_HOST port $T_PORT -> ${STRICT_IPS[*]}" >&2
+
+  # ----- Extra allowlist: JAILED_STRICT_ALLOWED_HOSTS (host env + conf, merged) -----
+  # Entries separated by commas and/or whitespace: host, host:port, ip, ip:port.
+  # Without a port, every TCP port of that host is allowed. Malformed or
+  # unresolvable entries abort the launch (fail-closed, explicit config error).
+  strict_extra="${JAILED_STRICT_ALLOWED_HOSTS:-} ${strict_allowed_conf}"
+  nl=$'\n'
+  strict_extra="${strict_extra//[,$nl]/ }"                # commas/newlines -> spaces
+  read -r -a strict_extra_entries <<< "$strict_extra"
+  strict_extra_desc=()
+  for entry in ${strict_extra_entries[@]+"${strict_extra_entries[@]}"}; do
+    case "$entry" in
+      \[*) die "JAILED_STRICT_ALLOWED_HOSTS: IPv6 entries are not supported ('$entry')" ;;
+      *://*) die "JAILED_STRICT_ALLOWED_HOSTS: expected host[:port], not a URL ('$entry')" ;;
+    esac
+    colons="${entry//[^:]/}"
+    if (( ${#colons} > 1 )); then die "JAILED_STRICT_ALLOWED_HOSTS: IPv6 entries are not supported ('$entry')"; fi
+    e_host="${entry%%:*}"
+    e_port=""
+    if [[ "$entry" == *:* ]]; then
+      e_port="${entry##*:}"
+      if ! [[ "$e_port" =~ ^[0-9]{1,5}$ ]] || (( 10#$e_port < 1 || 10#$e_port > 65535 )); then
+        die "JAILED_STRICT_ALLOWED_HOSTS: invalid port in '$entry'"
+      fi
+      e_port=$((10#$e_port))
+    fi
+    if [[ -z "$e_host" ]]; then die "JAILED_STRICT_ALLOWED_HOSTS: no host in '$entry'"; fi
+    resolved_ips="$(strict_resolve "$e_host" "JAILED_STRICT_ALLOWED_HOSTS")" || exit 1
+    mapfile -t e_ips <<< "$resolved_ips"
+    for ip in "${e_ips[@]}"; do
+      strict_add "$ip${e_port:+:$e_port}" STRICT_ALLOW
+      valid_ipv4 "$e_host" || strict_add "$ip $e_host" STRICT_HOSTS
+    done
+    strict_extra_desc+=("$e_host${e_port:+:$e_port}")
+    echo ">> --strict extra: $e_host port ${e_port:-any} -> ${e_ips[*]}" >&2
+  done
 
   # ----- Pin hostname -> IPs in /etc/hosts, kill all other DNS resolution -----
   hosts_tmp="$(mktemp -d)"
   {
     echo "127.0.0.1 localhost"
     echo "::1       localhost ip6-localhost ip6-loopback"
-    for ip in "${STRICT_IPS[@]}"; do echo "$ip $T_HOST"; done
+    for h in ${STRICT_HOSTS[@]+"${STRICT_HOSTS[@]}"}; do echo "$h"; done
   } > "$hosts_tmp/hosts"
 
   resolv_file="$(mktemp)"
@@ -535,8 +595,7 @@ if [[ "$STRICT" == "1" ]]; then
     --network "$strict_net" \
     --cap-drop=ALL --cap-add=NET_ADMIN \
     --security-opt no-new-privileges \
-    -e STRICT_TARGET_IPS="${STRICT_IPS[*]}" \
-    -e STRICT_TARGET_PORT="$T_PORT" \
+    -e STRICT_ALLOW="${STRICT_ALLOW[*]}" \
     "$IMAGE" /usr/local/lib/jailed-claude/strict-init.sh >/dev/null \
     || die "failed to start the strict sidecar (check 'docker ps -a --filter name=jailed_strict' for orphans)"
 
@@ -554,6 +613,7 @@ if [[ "$STRICT" == "1" ]]; then
     if [[ "$state" == "exited" ]]; then
       echo "!! --strict: sidecar exited before applying the ruleset:" >&2
       docker logs "$sidecar_name" >&2 || true
+      echo "!! (if it complains about STRICT_TARGET_IPS/STRICT_ALLOW the image is outdated: rebuild it with 'docker build -t $IMAGE -f $DOCKERFILE $SCRIPT_DIR')" >&2
       exit 1
     fi
     sleep 0.5
@@ -564,7 +624,11 @@ if [[ "$STRICT" == "1" ]]; then
 
   extra_args+=(--network "container:$sidecar_name")
   extra_args+=(-v "$hosts_tmp/hosts:/etc/hosts:ro" -v "$resolv_file:/etc/resolv.conf:ro")
-  echo ">> --strict active: egress pinned to $T_HOST (tcp/$T_PORT) — everything else is dropped at L3." >&2
+  if (( ${#strict_extra_desc[@]} > 0 )); then
+    echo ">> --strict active: egress pinned to $T_HOST (tcp/$T_PORT) + ${strict_extra_desc[*]} — everything else is dropped at L3." >&2
+  else
+    echo ">> --strict active: egress pinned to $T_HOST (tcp/$T_PORT) — everything else is dropped at L3." >&2
+  fi
 
 elif [[ "$ISOLATED" == "1" ]]; then
   # Validate the blocklist: skip malformed entries, but abort if nothing valid

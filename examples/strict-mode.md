@@ -57,4 +57,12 @@ Let's start coding! 💻
 
 > **What you get:** a sidecar applies an nftables ruleset in the shared network namespace that accepts *only* TCP to `10.10.10.10:8888` (plus loopback and established traffic). Every other packet — other IPs, UDP, ICMP, all IPv6 — is dropped at L3. The container itself keeps `--cap-drop=ALL`, so even adversarial code inside the jail cannot flush the ruleset.
 >
+> **Need more than one endpoint?** (e.g. a database or an internal MCP server) add `JAILED_STRICT_ALLOWED_HOSTS` to the profile — `host`, `host:port`, `ip` or `ip:port`, comma/space separated; no port means every TCP port of that host:
+>
+> ```bash
+> JAILED_STRICT_ALLOWED_HOSTS="10.10.10.20:5432,mcp.internal.lan:8080"
+> ```
+>
+> The launch then shows one `>> --strict extra: ...` line per entry, and nothing outside this allowlist is reachable.
+>
 > **Note:** the pin is per IP:port, not per hostname — with a target behind a CDN/shared IP, other domains on that IP stay reachable. A dedicated private endpoint like `10.10.10.10:8888` avoids this (see *Strict mode → What "one endpoint" really means* in the README).
